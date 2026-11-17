@@ -985,9 +985,42 @@ def setup_render(pct, samples, engine="cycles"):
         pass
 
 
-def build(font=None):
+FONT_CANDIDATES = [
+    "C:/Windows/Fonts/malgunbd.ttf", "C:/Windows/Fonts/malgun.ttf",          # Windows 맑은 고딕
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",                            # Mac
+    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",                   # Linux
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+]
+
+
+def find_font(font):
+    if font and os.path.exists(font):
+        return font
+    for c in FONT_CANDIDATES:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def clear_scene():
+    """Blender 화면에서 실행할 때: 화면 구성은 그대로 두고 장면 내용만 비움"""
+    for coll in (bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.lights,
+                 bpy.data.cameras, bpy.data.curves, bpy.data.worlds, bpy.data.fonts):
+        for item in list(coll):
+            try:
+                coll.remove(item)
+            except Exception:
+                pass
+    for c in list(bpy.context.scene.collection.children):
+        bpy.data.collections.remove(c)
+
+
+def build(font=None, gui=False):
     global SCENE, COLL
-    bpy.ops.wm.read_factory_settings(use_empty=True)
+    if gui:
+        clear_scene()
+    else:
+        bpy.ops.wm.read_factory_settings(use_empty=True)
     SCENE = bpy.context.scene
     COLL = SCENE.collection
     M.clear()
@@ -996,8 +1029,11 @@ def build(font=None):
     build_scenery()
     build_story()
     cam = build_camera()
-    if font and os.path.exists(font):
+    font = find_font(font)
+    if font:
         build_labels(cam, font)
+    else:
+        print("한글 폰트를 못 찾아서 키워드 자막은 생략합니다 (--font 로 지정 가능)")
     set_interp("BEZIER")
     SCENE.frame_set(1)
     return cam
@@ -1018,12 +1054,45 @@ def parse_args():
     return args
 
 
+def set_video_output(path):
+    """Render Animation 결과를 mp4 한 파일로 저장"""
+    st = SCENE.render.image_settings
+    try:
+        st.media_type = "VIDEO"          # Blender 5.x
+    except Exception:
+        pass
+    st.file_format = "FFMPEG"
+    ff = SCENE.render.ffmpeg
+    ff.format = "MPEG4"
+    ff.codec = "H264"
+    ff.constant_rate_factor = "HIGH"
+    SCENE.render.filepath = path
+
+
 def main():
-    in_gui = not bpy.app.background and bpy.context.window_manager.windows
-    args = parse_args() if not in_gui else argparse.Namespace(mode="build", out=None, pct=100, samples=64, font=None, only=None, engine="cycles")
-    build(args.font)
-    setup_render(args.pct, args.samples, args.engine)
+    prefs = bpy.context.preferences.edit
+    old_interp = prefs.keyframe_new_interpolation_type
+    in_gui = bool(not bpy.app.background and bpy.context.window_manager.windows)
+    args = parse_args() if not in_gui else argparse.Namespace(
+        mode="build", out=os.path.join(os.path.expanduser("~"), "slope_basement_out"),
+        pct=100, samples=64, font=None, only=None, engine="eevee")
+    try:
+        build(args.font, gui=in_gui)
+        setup_render(args.pct, args.samples, args.engine)
+    finally:
+        prefs.keyframe_new_interpolation_type = old_interp   # 사용자 설정 원상복구
     if in_gui:
+        out = args.out
+        os.makedirs(out, exist_ok=True)
+        write_texts(out)
+        set_video_output(os.path.join(out, "slope_basement_"))
+        for area in bpy.context.window.screen.areas:          # 3D 화면을 카메라 시점 + 재질 보기로
+            if area.type == "VIEW_3D":
+                for sp in area.spaces:
+                    if sp.type == "VIEW_3D":
+                        sp.region_3d.view_perspective = "CAMERA"
+                        sp.shading.type = "MATERIAL"
+        print("완료! 출력 폴더:", out)
         return
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
